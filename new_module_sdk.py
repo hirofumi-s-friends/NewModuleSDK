@@ -1,5 +1,7 @@
 from uuid import uuid4
-from azureml.pipeline.core.module import Module
+from ruamel.yaml import ruamel
+
+from azureml.pipeline.core.module import Module, ModuleVersion
 from azureml.pipeline.steps import ModuleStep
 from azureml.core import Workspace, Datastore, Dataset
 from azureml.data.data_reference import DataReference
@@ -9,60 +11,75 @@ from azureml.core.conda_dependencies import CondaDependencies
 from azureml.core.compute import AmlCompute
 
 
-class NewModuleStep:
+TRAINING_CLUSTER_TYPE = 'AmlCompute'
+USE_STRUCTURED_ARGUMENTS = 'USE_STRUCTURED_ARGUMENTS'
 
-    def __init__(self, module: Module, ws: Workspace = None):
-        self.module = module
+
+class ModuleStepX:
+
+    def __init__(self, module: Module, workspace: Workspace = None, compute_target: AmlCompute = None):
         self.inputs = {}
         self.outputs = {}
         self.params = {}
-        self.ws = ws
-        self.ds = ws.get_default_datastore()
+        self.inputs_keys = []
+        self.outputs_keys = []
+        self.params_keys = []
 
+        self.module = module
+        self.workspace = workspace
+        self.datastore = workspace.get_default_datastore()
+        self.compute_target = compute_target
+        self.default_module_version = self.get_default_module_version()
+
+        self.init_interface_keys()
         self.init_outputs()
         self.init_params()
 
     @classmethod
-    def get(cls, ws, name):
-        return cls(Module.get(ws, name=name), ws)
+    def get(cls, workspace, name, compute_target=None):
+        return cls(Module.get(workspace, name=name), workspace, compute_target=compute_target)
+
+    def init_interface_keys(self):
+        self.inputs_keys = [item.name for item in self.default_module_version.interface.inputs]
+        self.outputs_keys = [item.name for item in self.default_module_version.interface.outputs]
+        self.params_keys = [item.name for item in self.default_module_version.interface.parameters]
 
     def init_outputs(self):
-        # Should list output keys according to the module
-        output_keys = ['Results_dataset']
-        for key in output_keys:
-            self.outputs[key] = PipelineData(uuid4().hex, datastore=self.ds, is_directory=True)
+        for key in self.outputs_keys:
+            self.outputs[key] = PipelineData(uuid4().hex, datastore=self.datastore, is_directory=True)
 
     def init_params(self):
-        # Should list all params and set the default values
-        self.params['Arguments'] = 'USE_STRUCTURED_ARGUMENTS'
+        self.params['Arguments'] = USE_STRUCTURED_ARGUMENTS
 
     def __setattr__(self, key, value):
-        if self.is_input_port(key):
+        if key in ['inputs', 'outputs', 'params', 'inputs_keys', 'outputs_keys', 'params_keys']:
+            super().__setattr__(key, value)
+        elif self.is_input_port(key):
             self.inputs[key] = value
         elif self.is_param(key):
             self.params[key] = value
         elif self.is_output_port(key):
             if value is not PipelineData:
                 raise ValueError(f"Output must be set with PipelineData.")
-        super().__setattr__(key, value)
+        else:
+            super().__setattr__(key, value)
 
-    def __getattr__(self, item):
+    def __getattr__(self, key):
+        if key in ['inputs', 'outputs', 'params', 'inputs_keys', 'outputs_keys', 'params_keys']:
+            super().__getattribute__(key)
         for kv in [self.inputs, self.outputs, self.params]:
-            if item in kv:
-                return kv[item]
-        return super().__getattribute__(item)
+            if key in kv:
+                return kv[key]
+        return super().__getattribute__(key)
 
     def is_input_port(self, key):
-        # Should check the key according to the module
-        return key == 'Dataset'
+        return key in self.inputs_keys
 
     def is_output_port(self, key):
-        # Should check the key according to the module
-        return key == 'Results_dataset'
+        return key in self.outputs_keys
 
     def is_param(self, key):
-        # Should check the key according to the module
-        return False
+        return key in self.params_keys
 
     def get_module_step(self):
         print(self.inputs, self.outputs, self.params)
@@ -76,45 +93,61 @@ class NewModuleStep:
         )
 
     def get_compute_target(self):
-        # Should choose compute according to CPU/GPU of the module
-        return AmlCompute(self.ws, 'test-compute-ds2')
+        if self.compute_target is None:
+            computes = AmlCompute.list(self.workspace)
+            default_compute = next((compute for compute in computes
+                                    if compute.type.upper() == TRAINING_CLUSTER_TYPE.upper()
+                                    and compute.provisioning_state.upper() == 'Succeeded'.upper()), None)
+            if default_compute is None:
+                raise EnvironmentError(f"No compute target available in workspace {self.workspace.name}!")
+            return default_compute
+        return self.compute_target
 
     def get_run_config(self):
-        # Should choose proper run_config according to the module
+        def _get_structured_interface_param(name, param_list):
+            return next((param for param in param_list if param.name == name), None)
+
+        param_list = self.default_module_version.interface.parameters
+        conda_content = _get_structured_interface_param('CondaDependencies', param_list).default_value
+        docker_enabled = _get_structured_interface_param('DockerEnabled', param_list).default_value
+        base_docker_image = _get_structured_interface_param('BaseDockerImage', param_list).default_value
+        conda_dependencies = CondaDependencies(_underlying_structure=ruamel.yaml.safe_load(conda_content))
+
         run_config = RunConfiguration()
-        conda_dependencies = CondaDependencies(_underlying_structure={
-            'name': 'project_environment', 'channels': ['defaults'],
-            'dependencies': [
-                'python=3.6.8',
-                {'pip': [
-                    'azureml-dataprep[pandas,fuse]==1.1.29',
-                    'azureml-designer-classic-modules==0.0.105'
-                ]}]})
-        run_config.environment.docker.enabled = True
-        run_config.environment.docker.base_image = "mcr.microsoft.com/azureml/base:intelmpi2018.3-ubuntu16.04"
+        run_config.environment.docker.enabled = docker_enabled
+        run_config.environment.docker.base_image = base_docker_image
         run_config.environment.python.conda_dependencies = conda_dependencies
         return run_config
 
+    def get_default_module_version(self):
+        for v in self.module.module_version_list():
+            if v.version == self.module.default_version:
+                return ModuleVersion.get(self.workspace, v.module_version_id)
+        raise ModuleNotFoundError()
 
-class NewDataset:
+
+class DatasetX:
+    DEFAULT_GLOBAL_DATASET_STORE = "azureml_globaldatasets"
+    DEFAULT_DATA_REFERENCE_NAME = "Dataset"
 
     @classmethod
-    def get(cls, ws, name):
-        # It would be better to check the dataset name instead of try
-        try:
-            dataset = Dataset.get_by_name(ws, name)
-            return dataset.as_named_input('dataset').as_mount('tmp/dataset')
-        except:
-            # It would be better to get path according to the name
-            global_dataset_datastore = Datastore(ws, "azureml_globaldatasets")
-            return DataReference(
-                datastore=global_dataset_datastore,
-                data_reference_name='tmp_reference',
-                path_on_datastore=name,
-            )
+    def get(cls, workspace, name):
+        dataset = Dataset.get_by_name(workspace, name)
+        return dataset.as_named_input('dataset').as_mount('tmp/dataset')
+
+    @classmethod
+    def get_by_data_reference(cls, workspace, path):
+        data_store = Datastore(workspace, cls.DEFAULT_GLOBAL_DATASET_STORE)
+        return DataReference(
+            datastore=data_store,
+            data_reference_name=cls.DEFAULT_DATA_REFERENCE_NAME,
+            path_on_datastore=path,
+        )
 
 
-def submit_experiment(ws, steps, exp_name):
-    pipeline = Pipeline(ws, steps=[step.get_module_step() for step in steps])
-    experiment = Experiment(ws, exp_name)
-    experiment.submit(pipeline)
+class ExperimentX:
+    @staticmethod
+    def submit(workspace, steps, exp_name):
+        pipeline = Pipeline(workspace, steps=[step.get_module_step() for step in steps])
+        experiment = Experiment(workspace, exp_name)
+        experiment.submit(pipeline)
