@@ -11,11 +11,14 @@ from azureml.core.conda_dependencies import CondaDependencies
 from azureml.core.compute import AmlCompute
 
 
-TRAINING_CLUSTER_TYPE = 'AmlCompute'
 USE_STRUCTURED_ARGUMENTS = 'USE_STRUCTURED_ARGUMENTS'
 
 
 class ModuleStepX:
+
+    _aml_compute = 'AmlCompute'
+    _provisioning_succeeded = 'Succeeded'
+    _reserved_attr_names = ['inputs', 'outputs', 'params', 'inputs_keys', 'outputs_keys', 'params_keys']
 
     def __init__(self, module: Module, workspace: Workspace = None, compute_target: AmlCompute = None):
         self.inputs = {}
@@ -52,7 +55,7 @@ class ModuleStepX:
         self.params['Arguments'] = USE_STRUCTURED_ARGUMENTS
 
     def __setattr__(self, key, value):
-        if key in ['inputs', 'outputs', 'params', 'inputs_keys', 'outputs_keys', 'params_keys']:
+        if key in self._reserved_attr_names:
             super().__setattr__(key, value)
         elif self.is_input_port(key):
             self.inputs[key] = value
@@ -65,7 +68,7 @@ class ModuleStepX:
             super().__setattr__(key, value)
 
     def __getattr__(self, key):
-        if key in ['inputs', 'outputs', 'params', 'inputs_keys', 'outputs_keys', 'params_keys']:
+        if key in self._reserved_attr_names:
             super().__getattribute__(key)
         for kv in [self.inputs, self.outputs, self.params]:
             if key in kv:
@@ -82,7 +85,12 @@ class ModuleStepX:
         return key in self.params_keys
 
     def get_module_step(self):
-        print(self.inputs, self.outputs, self.params)
+        print(f"ModuleStep {self.module.name}")
+        print("Inputs: ", self.inputs)
+        print("Outputs: ", self.outputs)
+        print("Parameters: ", self.params)
+        print("\n")
+
         return ModuleStep(
             self.module,
             outputs_map=self.outputs,
@@ -93,11 +101,13 @@ class ModuleStepX:
         )
 
     def get_compute_target(self):
+        def compute_available(compute):
+            return compute.type.upper() == self._aml_compute.upper() \
+                   and compute.provisioning_state.upper() == self._provisioning_succeeded.upper()
+
         if self.compute_target is None:
             computes = AmlCompute.list(self.workspace)
-            default_compute = next((compute for compute in computes
-                                    if compute.type.upper() == TRAINING_CLUSTER_TYPE.upper()
-                                    and compute.provisioning_state.upper() == 'Succeeded'.upper()), None)
+            default_compute = next((compute for compute in computes if compute_available(compute)), None)
             if default_compute is None:
                 raise EnvironmentError(f"No compute target available in workspace {self.workspace.name}!")
             return default_compute
