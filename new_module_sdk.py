@@ -12,6 +12,12 @@ from azureml.core.compute import AmlCompute
 
 
 USE_STRUCTURED_ARGUMENTS = 'USE_STRUCTURED_ARGUMENTS'
+IGNORE_PARAMS = {
+    'ServingEntry', 'Target', 'MLCComputeType', 'PrepareEnvironment',
+    'Script', 'Framework', 'maxRunDurationSeconds', 'InterpreterPath',
+    'UserManagedDependencies', 'CondaDependencies', 'DockerEnabled', 'BaseDockerImage',
+    'GpuSupport', 'HistoryEnabled', 'Arguments'
+}
 
 
 class AttrDict(dict):
@@ -20,7 +26,7 @@ class AttrDict(dict):
         super().__init__()
         self._fields = set(fields)
         self._name = name
-        print(f"AttrDict {name} is inited, fields={fields}")
+        print(f"{name}: {fields}")
 
     def __getattr__(self, item):
         if item in self:
@@ -69,7 +75,6 @@ class ModuleStepX:
         self.compute_target = compute_target
 
         self.init_outputs()
-        self.init_params()
 
     @classmethod
     def get(cls, workspace, name, compute_target=None):
@@ -79,15 +84,14 @@ class ModuleStepX:
         return {
             'input': [item.name for item in self.default_module_version.interface.inputs],
             'output': [item.name for item in self.default_module_version.interface.outputs],
-            'param': [item.name for item in self.default_module_version.interface.parameters],
+            'param': [item.name for item in self.default_module_version.interface.parameters
+                      if item.name not in IGNORE_PARAMS
+                      ],
         }
 
     def init_outputs(self):
         for key in self.outputs.fields:
             self.outputs[key] = PipelineData(uuid4().hex, datastore=self.datastore, is_directory=True)
-
-    def init_params(self):
-        self.params['Arguments'] = USE_STRUCTURED_ARGUMENTS
 
     def get_module_step(self):
         print(f"ModuleStep {self.module.name}")
@@ -96,12 +100,15 @@ class ModuleStepX:
         print("Parameters: ", self.params)
         print("\n")
 
+        params = {'Arguments': USE_STRUCTURED_ARGUMENTS}
+        params.update(self.params)
+
         return ModuleStep(
             self.module,
             outputs_map=self.outputs,
             inputs_map=self.inputs,
             compute_target=self.get_compute_target(),
-            params=self.params,
+            params=params,
             runconfig=self.get_run_config(),
         )
 
