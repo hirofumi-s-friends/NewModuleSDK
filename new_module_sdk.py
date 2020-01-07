@@ -14,6 +14,41 @@ from azureml.core.compute import AmlCompute
 USE_STRUCTURED_ARGUMENTS = 'USE_STRUCTURED_ARGUMENTS'
 
 
+class AttrDict(dict):
+
+    def __init__(self, name, fields: list):
+        super().__init__()
+        self._fields = set(fields)
+        self._name = name
+        print(f"AttrDict {name} is inited, fields={fields}")
+
+    def __getattr__(self, item):
+        if item in self:
+            return self[item]
+        return self.__getattribute__(item)
+
+    def __setattr__(self, key, value):
+        if self.is_reserved_field(key):
+            return super().__setattr__(key, value)
+        self[key] = value
+
+    def __setitem__(self, key, value):
+        if key not in self._fields:
+            raise AttributeError(f"Can't set attribute {key}")
+        super().__setitem__(key, value)
+
+    @property
+    def fields(self):
+        return list(self._fields)
+
+    def is_valid_field(self, key):
+        return key in self._fields
+
+    @staticmethod
+    def is_reserved_field(key):
+        return key[0] == '_'
+
+
 class ModuleStepX:
 
     _aml_compute = 'AmlCompute'
@@ -21,20 +56,18 @@ class ModuleStepX:
     _reserved_attr_names = ['inputs', 'outputs', 'params', 'inputs_keys', 'outputs_keys', 'params_keys']
 
     def __init__(self, module: Module, workspace: Workspace = None, compute_target: AmlCompute = None):
-        self.inputs = {}
-        self.outputs = {}
-        self.params = {}
-        self.inputs_keys = []
-        self.outputs_keys = []
-        self.params_keys = []
-
         self.module = module
         self.workspace = workspace
-        self.datastore = workspace.get_default_datastore()
-        self.compute_target = compute_target
         self.default_module_version = self.get_default_module_version()
 
-        self.init_interface_keys()
+        interface_keys = self.get_interface_keys()
+        self.inputs = AttrDict('Input', interface_keys['input'])
+        self.outputs = AttrDict('Output', interface_keys['output'])
+        self.params = AttrDict('Parameter', interface_keys['param'])
+
+        self.datastore = workspace.get_default_datastore()
+        self.compute_target = compute_target
+
         self.init_outputs()
         self.init_params()
 
@@ -42,47 +75,19 @@ class ModuleStepX:
     def get(cls, workspace, name, compute_target=None):
         return cls(Module.get(workspace, name=name), workspace, compute_target=compute_target)
 
-    def init_interface_keys(self):
-        self.inputs_keys = [item.name for item in self.default_module_version.interface.inputs]
-        self.outputs_keys = [item.name for item in self.default_module_version.interface.outputs]
-        self.params_keys = [item.name for item in self.default_module_version.interface.parameters]
+    def get_interface_keys(self):
+        return {
+            'input': [item.name for item in self.default_module_version.interface.inputs],
+            'output': [item.name for item in self.default_module_version.interface.outputs],
+            'param': [item.name for item in self.default_module_version.interface.parameters],
+        }
 
     def init_outputs(self):
-        for key in self.outputs_keys:
+        for key in self.outputs.fields:
             self.outputs[key] = PipelineData(uuid4().hex, datastore=self.datastore, is_directory=True)
 
     def init_params(self):
         self.params['Arguments'] = USE_STRUCTURED_ARGUMENTS
-
-    def __setattr__(self, key, value):
-        if key in self._reserved_attr_names:
-            super().__setattr__(key, value)
-        elif self.is_input_port(key):
-            self.inputs[key] = value
-        elif self.is_param(key):
-            self.params[key] = value
-        elif self.is_output_port(key):
-            if value is not PipelineData:
-                raise ValueError(f"Output must be set with PipelineData.")
-        else:
-            super().__setattr__(key, value)
-
-    def __getattr__(self, key):
-        if key in self._reserved_attr_names:
-            super().__getattribute__(key)
-        for kv in [self.inputs, self.outputs, self.params]:
-            if key in kv:
-                return kv[key]
-        return super().__getattribute__(key)
-
-    def is_input_port(self, key):
-        return key in self.inputs_keys
-
-    def is_output_port(self, key):
-        return key in self.outputs_keys
-
-    def is_param(self, key):
-        return key in self.params_keys
 
     def get_module_step(self):
         print(f"ModuleStep {self.module.name}")
