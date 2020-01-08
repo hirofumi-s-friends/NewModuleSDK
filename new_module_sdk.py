@@ -1,5 +1,6 @@
 from uuid import uuid4
 from ruamel.yaml import ruamel
+import json
 
 from azureml.pipeline.core.module import Module, ModuleVersion
 from azureml.pipeline.steps import ModuleStep
@@ -11,6 +12,7 @@ from azureml.core.conda_dependencies import CondaDependencies
 from azureml.core.compute import AmlCompute
 
 from azureml.studio.core.utils.strutils import to_snake_case
+from azureml.studio.core.utils.column_selection import ColumnSelectionBuilder
 
 USE_STRUCTURED_ARGUMENTS = 'USE_STRUCTURED_ARGUMENTS'
 IGNORE_PARAMS = {
@@ -68,7 +70,6 @@ class ModuleStepX:
 
     _aml_compute = 'AmlCompute'
     _provisioning_succeeded = 'Succeeded'
-    _reserved_attr_names = ['inputs', 'outputs', 'params', 'inputs_keys', 'outputs_keys', 'params_keys']
 
     def __init__(self, module: Module, workspace: Workspace = None, compute_target: AmlCompute = None):
         self.module = module
@@ -87,7 +88,12 @@ class ModuleStepX:
 
     @classmethod
     def get(cls, workspace, name, compute_target=None):
-        return cls(Module.get(workspace, name=name), workspace, compute_target=compute_target)
+        prefix = 'azureml://'
+        try:
+            module = Module.get(workspace, name=prefix + name)
+        except Exception:
+            module = Module.get(workspace, name=name)
+        return cls(module, workspace, compute_target=compute_target)
 
     def get_interface_keys(self):
         return {
@@ -110,7 +116,10 @@ class ModuleStepX:
         print("\n")
 
         params = {'Arguments': USE_STRUCTURED_ARGUMENTS}
-        params.update(self.params)
+        for key, val in self.params.items():
+            if isinstance(val, ColumnSelectionBuilder):
+                val = json.dumps(val._obj)
+            params[key] = val
 
         return ModuleStep(
             self.module,
