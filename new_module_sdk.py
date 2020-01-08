@@ -10,6 +10,7 @@ from azureml.core import Experiment, RunConfiguration
 from azureml.core.conda_dependencies import CondaDependencies
 from azureml.core.compute import AmlCompute
 
+from azureml.studio.core.utils.strutils import to_snake_case
 
 USE_STRUCTURED_ARGUMENTS = 'USE_STRUCTURED_ARGUMENTS'
 IGNORE_PARAMS = {
@@ -24,11 +25,18 @@ class AttrDict(dict):
 
     def __init__(self, name, fields: list):
         super().__init__()
-        self._fields = set(fields)
-        self._name = name
         print(f"{name}: {fields}")
+        self._name = name
+
+        self._fields = set(fields)
+        self._fields_mapping = {to_snake_case(field): field for field in fields}
+        print(f"Mapping property to field names.")
+        for var_name, field in self._fields_mapping.items():
+            print(f"self.{var_name} => self['{field}']")
+        print()
 
     def __getattr__(self, item):
+        item = self._fields_mapping.get(item, item)
         if item in self:
             return self[item]
         return self.__getattribute__(item)
@@ -39,9 +47,10 @@ class AttrDict(dict):
         self[key] = value
 
     def __setitem__(self, key, value):
-        if key not in self._fields:
+        field = self._fields_mapping.get(key, key)
+        if field not in self._fields:
             raise AttributeError(f"Can't set attribute {key}")
-        super().__setitem__(key, value)
+        super().__setitem__(field, value)
 
     @property
     def fields(self):
