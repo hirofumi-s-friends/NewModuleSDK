@@ -27,15 +27,10 @@ class AttrDict(dict):
 
     def __init__(self, name, fields: list):
         super().__init__()
-        print(f"{name}: {fields}")
         self._name = name
 
         self._fields = set(fields)
         self._fields_mapping = {to_snake_case(field): field for field in fields}
-        print(f"Mapping property to field names.")
-        for var_name, field in self._fields_mapping.items():
-            print(f"self.{var_name} => self['{field}']")
-        print()
 
     def __getattr__(self, item):
         item = self._fields_mapping.get(item, item)
@@ -75,16 +70,13 @@ class ModuleStepX:
         self.module = module
         self.workspace = workspace
         self.default_module_version = self.get_default_module_version()
-
-        interface_keys = self.get_interface_keys()
-        self.inputs = AttrDict('Input', interface_keys['input'])
-        self.outputs = AttrDict('Output', interface_keys['output'])
-        self.params = AttrDict('Parameter', interface_keys['param'])
-
         self.datastore = workspace.get_default_datastore()
         self.compute_target = compute_target
 
-        self.init_outputs()
+        print(f"Initializing module: {module.name}")
+        self.inputs = self._get_inputs()
+        self.outputs = self._get_outputs()
+        self.params = self._get_params()
 
     @classmethod
     def get(cls, workspace, name, compute_target=None):
@@ -95,18 +87,41 @@ class ModuleStepX:
             module = Module.get(workspace, name=name)
         return cls(module, workspace, compute_target=compute_target)
 
-    def get_interface_keys(self):
-        return {
-            'input': [item.name for item in self.default_module_version.interface.inputs],
-            'output': [item.name for item in self.default_module_version.interface.outputs],
-            'param': [item.name for item in self.default_module_version.interface.parameters
-                      if item.name not in IGNORE_PARAMS
-                      ],
-        }
+    def _get_inputs(self):
+        print(f"Get inputs")
+        names = []
+        for item in self.default_module_version.interface.inputs:
+            print(f"inputs.{to_snake_case(item.name)}")
+            names.append(item.name)
+        print()
+        return AttrDict('inputs', names)
 
-    def init_outputs(self):
-        for key in self.outputs.fields:
-            self.outputs[key] = PipelineData(uuid4().hex, datastore=self.datastore, is_directory=True)
+    def _get_params(self):
+        print(f"Get params")
+        params = {}
+        for item in self.default_module_version.interface.parameters:
+            if item.name in IGNORE_PARAMS:
+                continue
+            default_value = None if item.is_optional else getattr(item, 'default_value', None)
+            default_value = f"'{default_value}'" if isinstance(default_value, str) else default_value
+            params[item.name] = default_value
+            print(f"params.{to_snake_case(item.name)} = {default_value}, is_optional={item.is_optional}")
+        result = AttrDict('params', list(params.keys()))
+        result.update(params)
+        print()
+        return result
+
+    def _get_outputs(self):
+        print(f"Get outputs")
+        names = []
+        for item in self.default_module_version.interface.outputs:
+            names.append(item.name)
+            print(f"outputs.{to_snake_case(item.name)}")
+        outputs = AttrDict('outputs', names)
+        for name in names:
+            outputs[name] = PipelineData(uuid4().hex, datastore=self.datastore, is_directory=True)
+        print()
+        return outputs
 
     def get_module_step(self):
         print(f"ModuleStep {self.module.name}")
@@ -117,6 +132,8 @@ class ModuleStepX:
 
         params = {'Arguments': USE_STRUCTURED_ARGUMENTS}
         for key, val in self.params.items():
+            if val is None:
+                continue
             if isinstance(val, ColumnSelectionBuilder):
                 val = json.dumps(val._obj)
             params[key] = val
