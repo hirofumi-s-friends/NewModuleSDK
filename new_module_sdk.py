@@ -107,7 +107,7 @@ class ModuleStepX:
             params[item.name] = default_value
             print(f"params.{to_snake_case(item.name)} = {default_value}, is_optional={item.is_optional}")
         result = AttrDict('params', list(params.keys()))
-        result.update(params)
+        # result.update(params)
         print()
         return result
 
